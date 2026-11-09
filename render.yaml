@@ -1,0 +1,14 @@
+services:
+  - type: web
+    name: campus-lostfound
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn app:app --bind 0.0.0.0:$PORT --workers 1 --threads 8 --timeout 60
+    envVars:
+      - key: ZHIPU_API_KEY
+        sync: false
+      - key: ZHIPU_MODEL
+        value: glm-4-flash
+      - key: PYTHON_VERSION
+        value: 3.11.9

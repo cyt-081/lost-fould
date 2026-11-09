@@ -1,0 +1,509 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>校园失物招领 · 云端版</title>
+<style>
+  :root {
+    --brand: #2f6df6; --brand-2: #6aa2ff; --ink: #17233d; --muted: #6b7a99;
+    --line: #e6ecf7; --card: #fff; --bg: #f4f7fe; --ok: #12b886; --warn: #f59f00; --err: #e03131;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; min-height: 100vh; color: var(--ink); background: var(--bg);
+    font-family: "PingFang SC", "Microsoft YaHei", "Segoe UI", system-ui, sans-serif;
+    background-image: radial-gradient(circle at 12% 6%, #dfe9ff 0, transparent 42%),
+                      radial-gradient(circle at 88% 0%, #e8f7ff 0, transparent 38%);
+  }
+  .wrap { max-width: 1000px; margin: 0 auto; padding: 34px 20px 70px; }
+  header { text-align: center; margin-bottom: 22px; }
+  header h1 { margin: 0 0 8px; font-size: 28px; letter-spacing: .5px; }
+  header p { margin: 0; color: var(--muted); font-size: 13px; }
+  .pill {
+    display: inline-flex; gap: 8px; align-items: center; margin-bottom: 12px; padding: 6px 14px;
+    border-radius: 999px; background: #e8efff; color: var(--brand); font-size: 12px; font-weight: 600;
+  }
+  .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--ok); box-shadow: 0 0 0 3px #d7f5ea; }
+  .tabs { display: flex; gap: 8px; margin-bottom: 14px; }
+  .tab {
+    flex: 1; padding: 12px; border-radius: 12px; border: 1px solid var(--line); background: #fff;
+    font-size: 14px; font-weight: 700; color: var(--muted); cursor: pointer; font-family: inherit;
+  }
+  .tab.active { color: #fff; background: linear-gradient(135deg, var(--brand), var(--brand-2));
+    border-color: transparent; box-shadow: 0 12px 24px -16px rgba(47,109,246,.9); }
+  .panel { background: var(--card); border: 1px solid var(--line); border-radius: 18px; padding: 22px;
+    box-shadow: 0 18px 40px -30px rgba(23,35,61,.45); }
+  .panel + .panel { margin-top: 16px; }
+  label { display: block; font-size: 13px; font-weight: 600; color: var(--muted); margin-bottom: 8px; }
+  textarea, input[type=text] {
+    width: 100%; padding: 13px 15px; font-size: 15px; color: var(--ink); background: #fbfcff;
+    border: 1px solid var(--line); border-radius: 12px; outline: none; font-family: inherit; line-height: 1.6;
+  }
+  textarea { min-height: 92px; resize: vertical; }
+  textarea:focus, input:focus { border-color: var(--brand-2); box-shadow: 0 0 0 4px #e7efff; }
+  .row { display: flex; gap: 10px; align-items: center; margin-top: 14px; flex-wrap: wrap; }
+  button.primary {
+    padding: 13px 24px; font-size: 15px; font-weight: 700; color: #fff; border: 0; border-radius: 12px;
+    cursor: pointer; background: linear-gradient(135deg, var(--brand), var(--brand-2));
+    box-shadow: 0 12px 24px -14px rgba(47,109,246,.9); font-family: inherit;
+  }
+  button.primary[disabled] { opacity: .6; cursor: not-allowed; box-shadow: none; }
+  button.ghost {
+    padding: 7px 14px; font-size: 12px; font-weight: 700; border-radius: 999px; cursor: pointer;
+    border: 1px solid var(--line); background: #fff; color: var(--muted); font-family: inherit;
+  }
+  button.ghost:hover { border-color: var(--brand-2); color: var(--brand); }
+  button.done {
+    padding: 7px 14px; font-size: 12px; font-weight: 700; border-radius: 999px; cursor: pointer;
+    border: 1px solid #b2ecd4; background: #eafaf2; color: #0f7d5a; font-family: inherit;
+  }
+  button.done:hover { background: #d9f7e8; }
+  .card .acts { display: flex; gap: 6px; }
+  button.apply {
+    padding: 7px 14px; font-size: 12px; font-weight: 700; border-radius: 999px; cursor: pointer;
+    border: 1px solid #c7d8ff; background: #eef3ff; color: #2f6df6; font-family: inherit;
+  }
+  button.apply:hover { background: #e0e9ff; }
+  button.recover {
+    padding: 7px 14px; font-size: 12px; font-weight: 700; border-radius: 999px; cursor: pointer;
+    border: 1px solid #ffd8a8; background: #fff7ea; color: #b35c00; font-family: inherit;
+  }
+  .tip { font-size: 12px; color: var(--muted); }
+  .hint {
+    margin-top: 12px; padding: 10px 14px; border-radius: 10px; font-size: 12.5px; line-height: 1.7;
+    color: #6b7a99; background: #f6f8fd; border: 1px dashed #dbe4f5;
+  }
+  .status { margin-top: 12px; font-size: 13px; min-height: 20px; }
+  .status.ok { color: var(--ok); } .status.err { color: var(--err); } .status.run { color: var(--brand); }
+  .chips { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; }
+  .chip { padding: 5px 12px; border-radius: 999px; background: #eef3ff; color: #33509a; font-size: 12px; font-weight: 600; }
+  .chip.llm { background: #eafaf2; color: #0f7d5a; }
+  .chip.rule { background: #fff4e6; color: #b35c00; }
+  .grid { display: grid; gap: 14px; margin-top: 18px; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); }
+  .card { border: 1px solid var(--line); border-radius: 16px; padding: 16px; background: #fff;
+    box-shadow: 0 14px 30px -26px rgba(23,35,61,.5); animation: pop .2s ease-out both;
+    display: flex; flex-direction: column; }
+  @keyframes pop { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+  .card h3 { margin: 0 0 6px; font-size: 15px; display: flex; justify-content: space-between; gap: 8px; }
+  .card p { margin: 0 0 10px; font-size: 13px; color: var(--muted); line-height: 1.7; word-break: break-word; }
+  .card .meta { font-size: 11px; color: #98a5bf; margin-bottom: 10px; }
+  .card .actions { margin-top: auto; display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+  .score { flex: 0 0 auto; font-size: 12px; font-weight: 700; color: var(--ok); background: #eaf7f1;
+    border-radius: 999px; padding: 3px 9px; }
+  .empty { text-align: center; color: var(--muted); font-size: 13px; margin-top: 26px; }
+  .list { margin-top: 14px; display: flex; flex-direction: column; gap: 10px; }
+  .list-row { display: flex; gap: 12px; align-items: center; justify-content: space-between;
+    border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px; background: #fbfcff; }
+  .list-row .info { font-size: 13px; }
+  .list-row .info strong { font-size: 14px; }
+  .list-row .info span { color: var(--muted); }
+  footer { margin-top: 26px; text-align: center; font-size: 12px; color: var(--muted); }
+  code { background: #eef2fb; padding: 1px 6px; border-radius: 6px; }
+
+  .overlay {
+    position: fixed; inset: 0; background: rgba(16,24,40,.55); display: none;
+    align-items: center; justify-content: center; z-index: 99; padding: 20px;
+  }
+  .overlay.show { display: flex; }
+  .modal {
+    width: 100%; max-width: 420px; background: #fff; border-radius: 18px; padding: 22px;
+    box-shadow: 0 30px 60px -20px rgba(16,24,40,.5); animation: pop .18s ease-out both;
+  }
+  .modal h3 { margin: 0 0 6px; font-size: 17px; }
+  .modal .sub { font-size: 12px; color: var(--muted); margin-bottom: 16px; line-height: 1.6; }
+  .modal .field { margin-bottom: 12px; }
+  .modal .field input { width: 100%; }
+  .modal .err { color: var(--err); font-size: 12px; min-height: 18px; margin-bottom: 6px; }
+  .modal .foot { display: flex; gap: 10px; justify-content: flex-end; margin-top: 6px; }
+  .modal .foot button { flex: 0 0 auto; }
+  .modal .cancel {
+    padding: 11px 18px; border-radius: 10px; border: 1px solid var(--line); background: #fff;
+    color: var(--muted); font-weight: 700; cursor: pointer; font-family: inherit;
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <span class="pill"><span class="dot"></span><span id="boot">正在连接云端服务…</span></span>
+    <h1>校园失物招领</h1>
+    <p>登记用大模型理解你的描述，查询用本地索引毫秒级返回</p>
+  </header>
+
+  <div class="tabs">
+    <button class="tab active" id="tab-reg">登记失物 / 招领</button>
+    <button class="tab" id="tab-qry">🔍 搜索失物/寻物线索</button>
+    <button class="tab" id="tab-arc">已找回归档</button>
+  </div>
+
+  <section class="panel" id="panel-reg">
+    <label for="reg-text">用大白话描述就行</label>
+    <textarea id="reg-text" placeholder="例如：昨天下午在图书馆二楼自习，走的时候把一把黑色的长柄雨伞落在座位上了，伞柄有点磨损"></textarea>
+    <div class="row">
+      <input type="text" id="reg-owner" placeholder="登记人姓名（选填，找回时需要核验）" style="flex:1 1 180px" />
+      <input type="text" id="reg-contact" placeholder="联系方式（选填，展示时自动脱敏）" style="flex:1 1 180px" />
+    </div>
+    <div class="row">
+      <button class="primary" id="btn-reg">提交登记</button>
+      <span class="tip">姓名会用于后续勾稽核验，不匹配将无法标记为已找回</span>
+    </div>
+    <div class="status" id="reg-status"></div>
+    <div class="chips" id="reg-chips"></div>
+  </section>
+
+  <section class="panel" id="panel-qry" style="display:none">
+    <label for="qry-text">想找什么？</label>
+    <div class="row" style="margin-top:0">
+      <input type="text" id="qry-text" placeholder="例如：黑色 雨伞 图书馆" style="flex:1 1 300px" />
+      <button class="primary" id="btn-qry">立即查找</button>
+    </div>
+    <div class="hint">💡 为了保护隐私，联系方式已脱敏。如需认领，请点击卡片上的按钮申请。</div>
+    <div class="status" id="qry-status"></div>
+    <div class="grid" id="grid"></div>
+    <div class="empty" id="empty" style="display:none">没有匹配的记录，换个颜色或地点试试</div>
+  </section>
+
+  <section class="panel" id="panel-arc" style="display:none">
+    <label>已标记为找回的记录</label>
+    <div class="row" style="margin-top:0">
+      <button class="ghost" id="btn-arc">刷新归档列表</button>
+      <span class="tip">发现误操作？点右侧「撤销」即可恢复为可查询状态</span>
+    </div>
+    <div class="status" id="arc-status"></div>
+    <div class="list" id="arc-list"></div>
+    <div class="empty" id="arc-empty" style="display:none">暂无已找回记录</div>
+  </section>
+
+  <footer>
+    登记走大模型（<code id="model-name">glm-4-flash</code>），查询走本地索引 · 联系方式与操作人自动脱敏
+  </footer>
+</div>
+
+<div class="overlay" id="overlay">
+  <div class="modal">
+    <h3>核对认领人身份</h3>
+    <div class="sub" id="modal-sub">请填写操作人信息，系统会与登记人姓名比对，不匹配将拒绝本次操作。</div>
+    <div class="field">
+      <label for="op-name">操作人姓名 *</label>
+      <input type="text" id="op-name" maxlength="20" placeholder="请输入你的真实姓名" />
+    </div>
+    <div class="field">
+      <label for="op-contact">联系方式 *</label>
+      <input type="text" id="op-contact" maxlength="40" placeholder="手机号 / 微信 / 邮箱" />
+    </div>
+    <div class="err" id="modal-err"></div>
+    <div class="foot">
+      <button class="cancel" id="modal-cancel">取消</button>
+      <button class="primary" id="modal-ok">确认提交</button>
+    </div>
+  </div>
+</div>
+
+<div class="overlay" id="apply-overlay">
+  <div class="modal">
+    <h3>申请认领 / 联系登记人</h3>
+    <div class="sub" id="apply-sub">提交申请后，管理员会核实并在后台转达您的信息，完整联系方式不会直接公开。</div>
+    <div class="field">
+      <label for="apply-name">您的姓名 *</label>
+      <input type="text" id="apply-name" maxlength="20" placeholder="请输入您的真实姓名" />
+    </div>
+    <div class="field">
+      <label for="apply-contact">您的联系方式 *</label>
+      <input type="text" id="apply-contact" maxlength="40" placeholder="手机号 / 微信 / 邮箱" />
+    </div>
+    <div class="err" id="apply-err"></div>
+    <div class="foot">
+      <button class="cancel" id="apply-cancel">取消</button>
+      <button class="primary" id="apply-ok">提交申请</button>
+    </div>
+  </div>
+</div>
+
+<script>
+  var $ = function (id) { return document.getElementById(id); };
+  var regStatus = $("reg-status"), qryStatus = $("qry-status"), arcStatus = $("arc-status");
+  var pendingResolve = null;
+
+  function setStatus(el, text, kind) {
+    el.textContent = text || "";
+    el.className = "status" + (kind ? " " + kind : "");
+  }
+  function esc(s) {
+    return String(s == null ? "" : s).replace(/[&<>"]/g, function (c) {
+      return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c];
+    });
+  }
+  function showTab(which) {
+    var map = { reg: "panel-reg", qry: "panel-qry", arc: "panel-arc" };
+    var tabs = { reg: "tab-reg", qry: "tab-qry", arc: "tab-arc" };
+    Object.keys(map).forEach(function (k) {
+      $(map[k]).style.display = (k === which) ? "block" : "none";
+      $(tabs[k]).classList.toggle("active", k === which);
+    });
+    if (which === "arc") { loadArchive(); }
+    if (which === "qry") { $("qry-text").focus(); }
+  }
+  $("tab-reg").addEventListener("click", function () { showTab("reg"); });
+  $("tab-qry").addEventListener("click", function () { showTab("qry"); });
+  $("tab-arc").addEventListener("click", function () { showTab("arc"); });
+
+  async function boot() {
+    try {
+      var r = await fetch("/api/health", { cache: "no-store" });
+      var j = await r.json();
+      $("boot").textContent = "服务在线 · 可查询 " + j.active + " 条 · 已找回 " + j.resolved +
+        " 条 · " + (j.llm_ready ? "大模型已就绪" : "大模型未配置（走本地规则）");
+      $("model-name").textContent = j.model || "-";
+    } catch (e) {
+      $("boot").textContent = "服务连接失败";
+    }
+  }
+
+  async function register() {
+    var text = $("reg-text").value.trim();
+    if (!text) { setStatus(regStatus, "先写一段描述吧", "err"); $("reg-text").focus(); return; }
+    var btn = $("btn-reg");
+    btn.disabled = true;
+    $("reg-chips").innerHTML = "";
+    setStatus(regStatus, "正在调用大模型理解你的描述，通常 2-6 秒…", "run");
+    try {
+      var r = await fetch("/api/register", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          text: text,
+          owner_name: $("reg-owner").value.trim(),
+          contact: $("reg-contact").value.trim()
+        })
+      });
+      var j = await r.json();
+      if (!r.ok || j.ok === false) { throw new Error(j.error || ("接口返回 " + r.status)); }
+      var item = j.item;
+      var chips = [];
+      chips.push('<span class="chip">' + esc(item.kind === "lost" ? "失主寻找" : "好心人拾获") + "</span>");
+      chips.push('<span class="chip">类别：' + esc(item.category || "-") + "</span>");
+      if (item.color) { chips.push('<span class="chip">颜色：' + esc(item.color) + "</span>"); }
+      if (item.place) { chips.push('<span class="chip">地点：' + esc(item.place) + "</span>"); }
+      (item.features || []).forEach(function (f) { chips.push('<span class="chip">' + esc(f) + "</span>"); });
+      chips.push('<span class="chip">状态：待认领</span>');
+      chips.push('<span class="chip ' + (j.llm_used ? "llm" : "rule") + '">' +
+        (j.llm_used ? "大模型抽取" : "本地规则抽取") + " · " + j.cost_ms + " ms</span>");
+      $("reg-chips").innerHTML = chips.join("");
+      setStatus(regStatus, "登记成功，编号 " + item.id + "（请记住登记人姓名，找回时需核验）", "ok");
+      $("reg-text").value = "";
+      $("reg-owner").value = "";
+      $("reg-contact").value = "";
+      boot();
+    } catch (e) {
+      setStatus(regStatus, "登记失败：" + (e && e.message ? e.message : e), "err");
+    } finally {
+      btn.disabled = false;
+    }
+  }
+
+  async function search() {
+    var q = $("qry-text").value.trim();
+    if (!q) { setStatus(qryStatus, "输入要找的物品", "err"); $("qry-text").focus(); return; }
+    var btn = $("btn-qry");
+    btn.disabled = true;
+    setStatus(qryStatus, "查询中…", "run");
+    try {
+      var r = await fetch("/api/query?q=" + encodeURIComponent(q));
+      var j = await r.json();
+      if (!r.ok || j.ok === false) { throw new Error(j.error || ("接口返回 " + r.status)); }
+      var grid = $("grid");
+      grid.innerHTML = "";
+      var cards = j.cards || [];
+      $("empty").style.display = cards.length ? "none" : "block";
+      cards.forEach(function (c, i) {
+        var el = document.createElement("article");
+        el.className = "card";
+        el.style.animationDelay = (i * 50) + "ms";
+        var hint = c.has_owner ? ("认领需核对姓名：" + esc(c.owner_hint)) : "该记录未登记姓名，核验将跳过";
+        var applied = c.apply_count ? (" · 已有 " + c.apply_count + " 人申请联系") : "";
+        el.innerHTML =
+          "<h3><span>" + esc(c.title) + '</span><span class="score">' + c.score + "</span></h3>" +
+          "<p>" + esc(c.detail) + "</p>" +
+          '<div class="meta">' + hint + " · 状态：待认领" + applied + "</div>" +
+          '<div class="actions"><span class="tip">编号 ' + esc(c.id) + '</span><span class="acts">' +
+          '<button class="apply" data-id="' + esc(c.id) + '" data-title="' + esc(c.title) + '">💬 申请认领/联系</button>' +
+          '<button class="done" data-id="' + esc(c.id) + '" data-title="' + esc(c.title) + '">✅ 已找回</button>' +
+          "</span></div>";
+        grid.appendChild(el);
+      });
+      setStatus(qryStatus, "扫描 " + j.scanned + " 条可查询记录，用时 " + j.cost_ms + " 毫秒", "ok");
+    } catch (e) {
+      setStatus(qryStatus, "查询失败：" + (e && e.message ? e.message : e), "err");
+    } finally {
+      btn.disabled = false;
+    }
+  }
+
+  function openModal(id, title) {
+    pendingResolve = { id: id, title: title };
+    $("op-name").value = "";
+    $("op-contact").value = "";
+    $("modal-err").textContent = "";
+    $("modal-sub").textContent = "正在标记「" + title + "」为已找回。请填写操作人信息，系统会与登记人姓名比对，不匹配将拒绝本次操作。";
+    $("overlay").classList.add("show");
+    setTimeout(function () { $("op-name").focus(); }, 60);
+  }
+  function closeModal() {
+    $("overlay").classList.remove("show");
+    pendingResolve = null;
+  }
+  $("modal-cancel").addEventListener("click", closeModal);
+  $("overlay").addEventListener("click", function (e) { if (e.target === $("overlay")) { closeModal(); } });
+  document.addEventListener("keydown", function (e) { if (e.key === "Escape" && $("overlay").classList.contains("show")) { closeModal(); } });
+
+  $("grid").addEventListener("click", function (e) {
+    var btn = e.target.closest ? e.target.closest("button.done") : null;
+    if (!btn) { return; }
+    var id = btn.getAttribute("data-id");
+    var title = btn.getAttribute("data-title");
+    if (!confirm("确认物品已被找回？误操作将影响查询")) { return; }
+    openModal(id, title);
+  });
+
+  async function submitResolve() {
+    if (!pendingResolve) { return; }
+    var operator = $("op-name").value.trim();
+    var contact = $("op-contact").value.trim();
+    if (!operator) { $("modal-err").textContent = "请填写操作人姓名"; $("op-name").focus(); return; }
+    if (!contact) { $("modal-err").textContent = "请填写联系方式"; $("op-contact").focus(); return; }
+    var btn = $("modal-ok");
+    btn.disabled = true;
+    $("modal-err").textContent = "";
+    try {
+      var r = await fetch("/api/resolve", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: pendingResolve.id, operator: operator, contact: contact })
+      });
+      var j = await r.json();
+      if (!r.ok || j.ok === false) {
+        var msg = j.error || ("接口返回 " + r.status);
+        if (r.status === 403 && j.owner_hint) { msg = msg + "（登记人： " + j.owner_hint + "）"; }
+        throw new Error(msg);
+      }
+      closeModal();
+      setStatus(qryStatus, "已标记为已找回" + (j.name_checked ? "，姓名核验通过，已写入审计日志" : "，该记录未登记姓名，核验已跳过"), "ok");
+      search();
+      boot();
+    } catch (e) {
+      $("modal-err").textContent = (e && e.message ? e.message : String(e));
+    } finally {
+      btn.disabled = false;
+    }
+  }
+  $("modal-ok").addEventListener("click", submitResolve);
+
+  var pendingApply = null;
+  function openApply(id, title) {
+    pendingApply = { id: id, title: title };
+    $("apply-name").value = "";
+    $("apply-contact").value = "";
+    $("apply-err").textContent = "";
+    $("apply-sub").textContent = "正在申请认领「" + title + "」。提交后管理员会核实并在后台转达，完整联系方式不会直接公开。";
+    $("apply-overlay").classList.add("show");
+    setTimeout(function () { $("apply-name").focus(); }, 60);
+  }
+  function closeApply() {
+    $("apply-overlay").classList.remove("show");
+    pendingApply = null;
+  }
+  $("apply-cancel").addEventListener("click", closeApply);
+  $("apply-overlay").addEventListener("click", function (e) { if (e.target === $("apply-overlay")) { closeApply(); } });
+
+  $("grid").addEventListener("click", function (e) {
+    var btn = e.target.closest ? e.target.closest("button.apply") : null;
+    if (!btn) { return; }
+    openApply(btn.getAttribute("data-id"), btn.getAttribute("data-title"));
+  });
+
+  async function submitApply() {
+    if (!pendingApply) { return; }
+    var name = $("apply-name").value.trim();
+    var contact = $("apply-contact").value.trim();
+    if (!name) { $("apply-err").textContent = "请填写您的姓名"; $("apply-name").focus(); return; }
+    if (!contact) { $("apply-err").textContent = "请填写您的联系方式"; $("apply-contact").focus(); return; }
+    var btn = $("apply-ok");
+    btn.disabled = true;
+    $("apply-err").textContent = "";
+    try {
+      var r = await fetch("/api/apply-contact", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: pendingApply.id, name: name, contact: contact })
+      });
+      var j = await r.json();
+      if (!r.ok || j.ok === false) { throw new Error(j.error || ("接口返回 " + r.status)); }
+      closeApply();
+      alert("申请已提交！管理员核实后，会将完整联系方式发送给您。请留意通知。");
+      setStatus(qryStatus, "申请已提交，已通知管理员核实（累计 " + j.apply_count + " 条申请）", "ok");
+      search();
+    } catch (e) {
+      $("apply-err").textContent = (e && e.message ? e.message : String(e));
+    } finally {
+      btn.disabled = false;
+    }
+  }
+  $("apply-ok").addEventListener("click", submitApply);
+  $("apply-contact").addEventListener("keydown", function (e) { if (e.key === "Enter") { e.preventDefault(); submitApply(); } });
+  $("op-contact").addEventListener("keydown", function (e) { if (e.key === "Enter") { e.preventDefault(); submitResolve(); } });
+
+  async function loadArchive() {
+    setStatus(arcStatus, "加载中…", "run");
+    try {
+      var r = await fetch("/api/items?status=resolved&limit=100");
+      var j = await r.json();
+      var list = $("arc-list");
+      list.innerHTML = "";
+      var rows = j.items || [];
+      $("arc-empty").style.display = rows.length ? "none" : "block";
+      rows.forEach(function (it) {
+        var el = document.createElement("div");
+        el.className = "list-row";
+        var audit = it.audit_log && it.audit_log.length ? it.audit_log[it.audit_log.length - 1] : null;
+        var who = audit ? ("由 " + esc(audit.operator) + " 于 " + esc(audit.at) + " 标记") : "无审计记录";
+        el.innerHTML =
+          '<div class="info"><strong>' + esc(it.title) + "</strong><br>" +
+          "<span>" + esc(it.detail) + "</span><br>" +
+          "<span>" + who + " · 编号 " + esc(it.id) + "</span></div>" +
+          '<button class="recover" data-id="' + esc(it.id) + '" data-title="' + esc(it.title) + '">撤销</button>';
+        list.appendChild(el);
+      });
+      setStatus(arcStatus, "已找回记录 " + rows.length + " 条", "ok");
+    } catch (e) {
+      setStatus(arcStatus, "加载失败：" + (e && e.message ? e.message : e), "err");
+    }
+  }
+
+  $("arc-list").addEventListener("click", async function (e) {
+    var btn = e.target.closest ? e.target.closest("button.recover") : null;
+    if (!btn) { return; }
+    var title = btn.getAttribute("data-title");
+    if (!confirm("确认撤销「" + title + "」的已找回状态？该记录将重新出现在查询结果中")) { return; }
+    btn.disabled = true;
+    try {
+      var r = await fetch("/api/recover", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: btn.getAttribute("data-id"), operator: "撤销操作", contact: "-" })
+      });
+      var j = await r.json();
+      if (!r.ok || j.ok === false) { throw new Error(j.error || ("接口返回 " + r.status)); }
+      setStatus(arcStatus, "已撤销，记录回到可查询状态", "ok");
+      loadArchive();
+      boot();
+    } catch (err) {
+      setStatus(arcStatus, "撤销失败：" + (err && err.message ? err.message : err), "err");
+      btn.disabled = false;
+    }
+  });
+
+  $("btn-reg").addEventListener("click", register);
+  $("btn-qry").addEventListener("click", search);
+  $("btn-arc").addEventListener("click", loadArchive);
+  $("qry-text").addEventListener("keydown", function (e) { if (e.key === "Enter") { e.preventDefault(); search(); } });
+  boot();
+</script>
+</body>
+</html>
