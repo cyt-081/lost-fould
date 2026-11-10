@@ -10,6 +10,7 @@
   POST /api/resolve      标记已找回（二次确认 + 姓名核验 + 审计留痕）
   POST /api/recover      撤销误操作，恢复为 active
 """
+import hmac
 import os
 import re
 import threading
@@ -51,6 +52,9 @@ ALLOW_CORS = os.environ.get("ALLOW_CORS", "1") == "1"
 MAX_TEXT = int(os.environ.get("MAX_TEXT", "600"))
 RATE_LIMIT = int(os.environ.get("RATE_LIMIT_PER_MIN", "12"))
 STARTED_AT = time.time()
+
+ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "admin123")
+PHONE_RE = re.compile(r"^1\d{10}$")
 
 STATUS_ACTIVE = "active"
 STATUS_RESOLVED = "resolved"
@@ -460,6 +464,11 @@ def apply_contact():
     if len(applicant) > 20 or len(contact) > 40:
         return jsonify({"ok": False, "error": "姓名或联系方式过长"}), 400
 
+    phone = re.sub(r"[\s\-]", "", contact)
+    if not PHONE_RE.match(phone):
+        return jsonify({"ok": False, "error": "号码格式不正确，请输入 1 开头的 11 位手机号"}), 400
+    contact = phone
+
     ip = (request.headers.get("X-Forwarded-For") or request.remote_addr or "?").split(",")[0].strip()
     if not rate_ok(ip + ":apply", limit=20):
         return jsonify({"ok": False, "error": "提交太频繁了，请稍后再试"}), 429
@@ -491,6 +500,50 @@ def apply_contact():
         "apply_count": len(updated.get("apply_log") or []),
         "item": public_item(updated),
     })
+
+
+# ---------------------------------------------------------------- 管理员
+def admin_ok(candidate):
+    candidate = (candidate or "").strip()
+    return bool(candidate) and hmac.compare_digest(candidate, ADMIN_PASSWORD)
+
+
+@app.route("/api/admin-applications", methods=["GET", "POST", "OPTIONS"])
+def admin_applications():
+    if request.method == "OPTIONS":
+        return ("", 204)
+    payload = request.get_json(silent=True) or {}
+    supplied = (request.args.get("password")
+                or payload.get("password")
+                or request.headers.get("X-Admin-Password")
+                or "")
+    if not admin_ok(supplied):
+        return jsonify({"ok": False, "error": "管理员密码不正确"}), 401
+
+    rows = []
+    for item in store.all():
+        applies = item.get("apply_log") or []
+        if not applies:
+            continue
+        rows.append({
+            "id": item.get("id"),
+            "title": item.get("title", ""),
+            "category": item.get("category", ""),
+            "place": item.get("place", ""),
+            "status": item.get("status", STATUS_ACTIVE),
+            "created_at": item.get("created_at", ""),
+            "apply_count": len(applies),
+            "latest_at": applies[-1].get("at", ""),
+            "applications": [
+                {"applicant": row.get("applicant", ""),
+                 "contact": row.get("contact", ""),
+                 "at": row.get("at", ""),
+                 "state": row.get("state", "pending")}
+                for row in applies
+            ],
+        })
+    rows.sort(key=lambda r: r.get("latest_at") or "", reverse=True)
+    return jsonify({"ok": True, "total": len(rows), "items": rows})
 
 
 @app.errorhandler(404)

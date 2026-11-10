@@ -69,6 +69,19 @@
     padding: 7px 14px; font-size: 12px; font-weight: 700; border-radius: 999px; cursor: pointer;
     border: 1px solid #ffd8a8; background: #fff7ea; color: #b35c00; font-family: inherit;
   }
+  .topbar { display: flex; justify-content: flex-end; margin-bottom: 6px; }
+  button.admin-entry {
+    padding: 6px 14px; font-size: 12px; font-weight: 600; border-radius: 999px; cursor: pointer;
+    border: 1px solid var(--line); background: #eff2f8; color: #7c88a1; font-family: inherit;
+  }
+  button.admin-entry:hover { color: #44506b; border-color: #c9d4e8; }
+  .admin-table { width: 100%; border-collapse: collapse; margin-top: 14px; font-size: 13px; }
+  .admin-table th, .admin-table td { text-align: left; padding: 10px 12px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  .admin-table th { color: var(--muted); font-weight: 700; background: #f7f9fd; font-size: 12px; }
+  .admin-table tr:last-child td { border-bottom: 0; }
+  .admin-table .phone { font-family: Consolas, monospace; color: #0f7d5a; font-weight: 700; }
+  .admin-table .when { color: #98a5bf; font-size: 11px; }
+  .badge-pending { background: #fff4e6; color: #b35c00; border-radius: 999px; padding: 2px 8px; font-size: 11px; font-weight: 700; }
   .tip { font-size: 12px; color: var(--muted); }
   .hint {
     margin-top: 12px; padding: 10px 14px; border-radius: 10px; font-size: 12.5px; line-height: 1.7;
@@ -125,6 +138,8 @@
 </head>
 <body>
 <div class="wrap">
+  <div class="topbar"><button class="admin-entry" id="btn-admin">管理员入口</button></div>
+
   <header>
     <span class="pill"><span class="dot"></span><span id="boot">正在连接云端服务…</span></span>
     <h1>校园失物招领</h1>
@@ -175,6 +190,23 @@
     <div class="empty" id="arc-empty" style="display:none">暂无已找回记录</div>
   </section>
 
+  <section class="panel" id="panel-admin" style="display:none">
+    <label>管理员面板 · 认领申请总览</label>
+    <div class="row" style="margin-top:0">
+      <button class="ghost" id="btn-admin-refresh">刷新列表</button>
+      <button class="ghost" id="btn-admin-exit">退出管理员</button>
+      <span class="tip">含完整联系方式，仅供管理员核实后转达，请勿截图外传</span>
+    </div>
+    <div class="status" id="admin-status"></div>
+    <table class="admin-table" id="admin-table">
+      <thead>
+        <tr><th>物品名称</th><th>申请人</th><th>电话</th><th>申请时间</th><th>状态</th></tr>
+      </thead>
+      <tbody id="admin-body"></tbody>
+    </table>
+    <div class="empty" id="admin-empty" style="display:none">暂无认领申请</div>
+  </section>
+
   <footer>
     登记走大模型（<code id="model-name">glm-4-flash</code>），查询走本地索引 · 联系方式与操作人自动脱敏
   </footer>
@@ -200,6 +232,22 @@
   </div>
 </div>
 
+<div class="overlay" id="admin-overlay">
+  <div class="modal">
+    <h3>管理员验证</h3>
+    <div class="sub">请输入管理员密码，验证通过后可查看全部认领申请记录。</div>
+    <div class="field">
+      <label for="admin-pass">管理员密码 *</label>
+      <input type="text" id="admin-pass" maxlength="32" placeholder="请输入管理员密码" />
+    </div>
+    <div class="err" id="admin-err"></div>
+    <div class="foot">
+      <button class="cancel" id="admin-cancel">取消</button>
+      <button class="primary" id="admin-ok">进入</button>
+    </div>
+  </div>
+</div>
+
 <div class="overlay" id="apply-overlay">
   <div class="modal">
     <h3>申请认领 / 联系登记人</h3>
@@ -210,7 +258,7 @@
     </div>
     <div class="field">
       <label for="apply-contact">您的联系方式 *</label>
-      <input type="text" id="apply-contact" maxlength="40" placeholder="手机号 / 微信 / 邮箱" />
+      <input type="text" id="apply-contact" maxlength="11" placeholder="请输入 11 位手机号，如 13812345678" />
     </div>
     <div class="err" id="apply-err"></div>
     <div class="foot">
@@ -223,6 +271,7 @@
 <script>
   var $ = function (id) { return document.getElementById(id); };
   var regStatus = $("reg-status"), qryStatus = $("qry-status"), arcStatus = $("arc-status");
+  var adminStatus = $("admin-status");
   var pendingResolve = null;
 
   function setStatus(el, text, kind) {
@@ -235,14 +284,17 @@
     });
   }
   function showTab(which) {
-    var map = { reg: "panel-reg", qry: "panel-qry", arc: "panel-arc" };
+    var map = { reg: "panel-reg", qry: "panel-qry", arc: "panel-arc", admin: "panel-admin" };
     var tabs = { reg: "tab-reg", qry: "tab-qry", arc: "tab-arc" };
     Object.keys(map).forEach(function (k) {
       $(map[k]).style.display = (k === which) ? "block" : "none";
-      $(tabs[k]).classList.toggle("active", k === which);
+      if (tabs[k]) { $(tabs[k]).classList.toggle("active", k === which); }
     });
+    var bar = document.querySelector(".tabs");
+    if (bar) { bar.style.display = (which === "admin") ? "none" : "flex"; }
     if (which === "arc") { loadArchive(); }
     if (which === "qry") { $("qry-text").focus(); }
+    if (which === "admin") { loadAdmin(); }
   }
   $("tab-reg").addEventListener("click", function () { showTab("reg"); });
   $("tab-qry").addEventListener("click", function () { showTab("qry"); });
@@ -426,6 +478,11 @@
     var contact = $("apply-contact").value.trim();
     if (!name) { $("apply-err").textContent = "请填写您的姓名"; $("apply-name").focus(); return; }
     if (!contact) { $("apply-err").textContent = "请填写您的联系方式"; $("apply-contact").focus(); return; }
+    if (!/^1\d{10}$/.test(contact)) {
+      $("apply-err").textContent = "号码格式不正确，请输入 1 开头的 11 位手机号";
+      $("apply-contact").focus();
+      return;
+    }
     var btn = $("apply-ok");
     btn.disabled = true;
     $("apply-err").textContent = "";
@@ -449,6 +506,95 @@
   $("apply-ok").addEventListener("click", submitApply);
   $("apply-contact").addEventListener("keydown", function (e) { if (e.key === "Enter") { e.preventDefault(); submitApply(); } });
   $("op-contact").addEventListener("keydown", function (e) { if (e.key === "Enter") { e.preventDefault(); submitResolve(); } });
+
+  var ADMIN_STORE = "xyq_admin_pass";
+  var adminPass = sessionStorage.getItem(ADMIN_STORE) || "";
+
+  function openAdminLogin() {
+    $("admin-pass").value = "";
+    $("admin-err").textContent = "";
+    $("admin-overlay").classList.add("show");
+    setTimeout(function () { $("admin-pass").focus(); }, 60);
+  }
+  function closeAdminLogin() { $("admin-overlay").classList.remove("show"); }
+
+  async function adminLogin() {
+    var pass = $("admin-pass").value.trim();
+    if (!pass) { $("admin-err").textContent = "请输入管理员密码"; $("admin-pass").focus(); return; }
+    var btn = $("admin-ok");
+    btn.disabled = true;
+    $("admin-err").textContent = "";
+    try {
+      var r = await fetch("/api/admin-applications?password=" + encodeURIComponent(pass));
+      var j = await r.json();
+      if (!r.ok || j.ok === false) { throw new Error(j.error || ("接口返回 " + r.status)); }
+      adminPass = pass;
+      sessionStorage.setItem(ADMIN_STORE, pass);
+      closeAdminLogin();
+      renderAdmin(j);
+      setStatus(adminStatus, "验证通过，共 " + j.total + " 条物品收到认领申请", "ok");
+      showTab("admin");
+    } catch (e) {
+      $("admin-err").textContent = (e && e.message ? e.message : String(e));
+    } finally {
+      btn.disabled = false;
+    }
+  }
+
+  function renderAdmin(j) {
+    var body = $("admin-body");
+    body.innerHTML = "";
+    var rows = j.items || [];
+    $("admin-empty").style.display = rows.length ? "none" : "block";
+    rows.forEach(function (item) {
+      (item.applications || []).forEach(function (ap, index) {
+        var tr = document.createElement("tr");
+        tr.innerHTML =
+          "<td>" + (index === 0 ? "<strong>" + esc(item.title) + "</strong><br><span class=\"when\">" +
+              (item.apply_count > 1 ? "共 " + item.apply_count + " 条申请" : "1 条申请") + "</span>" : "") + "</td>" +
+          "<td>" + esc(ap.applicant) + "</td>" +
+          '<td class="phone">' + esc(ap.contact) + "</td>" +
+          '<td class="when">' + esc(ap.at) + "</td>" +
+          '<td><span class="badge-pending">待核实</span></td>';
+        body.appendChild(tr);
+      });
+    });
+  }
+
+  async function loadAdmin() {
+    if (!adminPass) { openAdminLogin(); return; }
+    setStatus(adminStatus, "加载中…", "run");
+    try {
+      var r = await fetch("/api/admin-applications?password=" + encodeURIComponent(adminPass));
+      var j = await r.json();
+      if (r.status === 401) {
+        adminPass = "";
+        sessionStorage.removeItem(ADMIN_STORE);
+        openAdminLogin();
+        return;
+      }
+      if (!r.ok || j.ok === false) { throw new Error(j.error || ("接口返回 " + r.status)); }
+      renderAdmin(j);
+      setStatus(adminStatus, "共 " + j.total + " 条物品收到认领申请", "ok");
+    } catch (e) {
+      setStatus(adminStatus, "加载失败：" + (e && e.message ? e.message : e), "err");
+    }
+  }
+
+  $("btn-admin").addEventListener("click", function () {
+    if (adminPass) { showTab("admin"); } else { openAdminLogin(); }
+  });
+  $("admin-ok").addEventListener("click", adminLogin);
+  $("admin-cancel").addEventListener("click", closeAdminLogin);
+  $("admin-overlay").addEventListener("click", function (e) { if (e.target === $("admin-overlay")) { closeAdminLogin(); } });
+  $("admin-pass").addEventListener("keydown", function (e) { if (e.key === "Enter") { e.preventDefault(); adminLogin(); } });
+  $("btn-admin-refresh").addEventListener("click", loadAdmin);
+  $("btn-admin-exit").addEventListener("click", function () {
+    adminPass = "";
+    sessionStorage.removeItem(ADMIN_STORE);
+    $("admin-body").innerHTML = "";
+    showTab("qry");
+  });
 
   async function loadArchive() {
     setStatus(arcStatus, "加载中…", "run");
