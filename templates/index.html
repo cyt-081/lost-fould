@@ -76,6 +76,19 @@
   .admin-table .phone { font-family: Consolas, monospace; color: #0f7d5a; font-weight: 700; }
   .admin-table .when { color: #98a5bf; font-size: 11px; }
   .badge-pending { background: #fff4e6; color: #b35c00; border-radius: 999px; padding: 2px 8px; font-size: 11px; font-weight: 700; }
+  .badge-done { background: #eafaf2; color: #0f7d5a; border-radius: 999px; padding: 2px 8px; font-size: 11px; font-weight: 700; }
+  .badge-muted { background: #f1f3f7; color: #8a93a6; border-radius: 999px; padding: 2px 8px; font-size: 11px; font-weight: 700; }
+  .ops { display: flex; gap: 6px; flex-wrap: wrap; }
+  button.approve {
+    padding: 5px 12px; font-size: 12px; font-weight: 700; border-radius: 999px; cursor: pointer;
+    border: 1px solid #b2ecd4; background: #eafaf2; color: #0f7d5a; font-family: inherit;
+  }
+  button.approve:hover { background: #d9f7e8; }
+  button.reject {
+    padding: 5px 12px; font-size: 12px; font-weight: 700; border-radius: 999px; cursor: pointer;
+    border: 1px solid #ffc9c9; background: #ffecec; color: #d6336c; font-family: inherit;
+  }
+  button.reject:hover { background: #ffdede; }
   .tip { font-size: 12px; color: var(--muted); }
   .filters { display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap; }
   .flt {
@@ -210,11 +223,24 @@
     <div class="status" id="admin-status"></div>
     <table class="admin-table" id="admin-table">
       <thead>
-        <tr><th>物品名称</th><th>申请人</th><th>电话</th><th>申请时间</th><th>状态</th></tr>
+        <tr><th>物品名称</th><th>申请人</th><th>电话</th><th>申请时间</th><th>状态 / 操作</th></tr>
       </thead>
       <tbody id="admin-body"></tbody>
     </table>
     <div class="empty" id="admin-empty" style="display:none">暂无认领申请</div>
+
+    <label style="margin-top:24px">已找回归档</label>
+    <div class="row" style="margin-top:0">
+      <button class="ghost" id="btn-admin-archive">刷新归档</button>
+      <span class="tip">撤销后该物品会重新出现在公网查询列表中</span>
+    </div>
+    <table class="admin-table" id="admin-archive-table">
+      <thead>
+        <tr><th>物品</th><th>处理时间</th><th>认领人</th><th>操作</th></tr>
+      </thead>
+      <tbody id="admin-archive-body"></tbody>
+    </table>
+    <div class="empty" id="admin-archive-empty" style="display:none">暂无已找回记录</div>
   </section>
 
   <footer>校园失物招领 · 请如实填写信息，方便失主与拾获者尽快对接</footer>
@@ -302,7 +328,7 @@
     if (bar) { bar.style.display = (which === "admin") ? "none" : "flex"; }
     if (which === "arc") { loadArchive(); }
     if (which === "qry") { $("qry-text").focus(); }
-    if (which === "admin") { loadAdmin(); renderHealth(); }
+    if (which === "admin") { loadAdmin(); loadAdminArchive(); renderHealth(); }
   }
   $("tab-reg").addEventListener("click", function () { showTab("reg"); });
   $("tab-qry").addEventListener("click", function () { showTab("qry"); });
@@ -593,12 +619,25 @@
       renderAdmin(j);
       setStatus(adminStatus, "验证通过，共 " + j.total + " 条物品收到认领申请", "ok");
       showTab("admin");
+      loadAdminArchive();
       boot();
     } catch (e) {
       $("admin-err").textContent = (e && e.message ? e.message : String(e));
     } finally {
       btn.disabled = false;
     }
+  }
+
+  var APPLY_STATE = {
+    pending: { label: "待核实", cls: "badge-pending" },
+    approved: { label: "已交接", cls: "badge-done" },
+    rejected: { label: "已拒绝", cls: "badge-muted" },
+    invalidated: { label: "已失效", cls: "badge-muted" }
+  };
+
+  function stateBadge(state) {
+    var s = APPLY_STATE[state] || APPLY_STATE.pending;
+    return '<span class="' + s.cls + '">' + s.label + "</span>";
   }
 
   function renderAdmin(j) {
@@ -608,6 +647,14 @@
     $("admin-empty").style.display = rows.length ? "none" : "block";
     rows.forEach(function (item) {
       (item.applications || []).forEach(function (ap, index) {
+        var state = ap.state || "pending";
+        var ops = stateBadge(state);
+        if (state === "pending") {
+          ops += '<div class="ops" style="margin-top:6px">' +
+            '<button class="approve" data-id="' + esc(item.id) + '" data-name="' + esc(ap.applicant) + '">✅ 通过</button>' +
+            '<button class="reject" data-id="' + esc(item.id) + '" data-name="' + esc(ap.applicant) + '">❌ 拒绝</button>' +
+            "</div>";
+        }
         var tr = document.createElement("tr");
         tr.innerHTML =
           "<td>" + (index === 0 ? "<strong>" + esc(item.title) + "</strong><br><span class=\"when\">" +
@@ -615,11 +662,100 @@
           "<td>" + esc(ap.applicant) + "</td>" +
           '<td class="phone">' + esc(ap.contact) + "</td>" +
           '<td class="when">' + esc(ap.at) + "</td>" +
-          '<td><span class="badge-pending">待核实</span></td>';
+          "<td>" + ops + "</td>";
         body.appendChild(tr);
       });
     });
   }
+
+  async function handleApply(itemId, applicant, action) {
+    var ask = action === "approve"
+      ? "确认通过「" + applicant + "」的认领？\n通过后该物品会立刻标记为已找回并从公网查询消失，其它待核实申请将自动失效。"
+      : "确认拒绝「" + applicant + "」的申请？物品会继续留在可查询列表里。";
+    if (!confirm(ask)) { return; }
+    try {
+      var r = await fetch("/api/admin-handle-apply", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-Admin-Password": adminPass },
+        body: JSON.stringify({ id: itemId, applicant: applicant, action: action })
+      });
+      if (r.status === 401) {
+        adminPass = "";
+        sessionStorage.removeItem("xyq_admin_pass");
+        openAdminLogin();
+        return;
+      }
+      var j = await r.json();
+      if (!r.ok || j.ok === false) { throw new Error(j.error || ("接口返回 " + r.status)); }
+      setStatus(adminStatus, j.message + "（自动失效 " + j.invalidated + " 条）", "ok");
+      loadAdmin();
+      loadAdminArchive();
+      boot();
+    } catch (e) {
+      setStatus(adminStatus, "操作失败：" + (e && e.message ? e.message : e), "err");
+    }
+  }
+
+  $("admin-body").addEventListener("click", function (e) {
+    var btn = e.target.closest ? e.target.closest("button.approve, button.reject") : null;
+    if (!btn) { return; }
+    var action = btn.classList.contains("approve") ? "approve" : "reject";
+    handleApply(btn.getAttribute("data-id"), btn.getAttribute("data-name"), action);
+  });
+
+  async function loadAdminArchive() {
+    if (!adminPass) { return; }
+    try {
+      var r = await fetch("/api/admin-items?status=resolved&limit=100", { headers: { "X-Admin-Password": adminPass } });
+      var j = await r.json();
+      if (!r.ok || j.ok === false) { return; }
+      var body = $("admin-archive-body");
+      body.innerHTML = "";
+      var rows = j.items || [];
+      $("admin-archive-empty").style.display = rows.length ? "none" : "block";
+      rows.forEach(function (it) {
+        var audit = (it.audit_log || []).filter(function (a) { return a.action === "approve_apply" || a.action === "resolve"; }).pop();
+        var who = audit ? audit.operator : "-";
+        var when = it.resolved_at || (audit ? audit.at : "-");
+        var tr = document.createElement("tr");
+        tr.innerHTML =
+          "<td><strong>" + esc(it.title) + "</strong><br><span class=\"when\">编号 " + esc(it.id) + "</span></td>" +
+          '<td class="when">' + esc(when) + "</td>" +
+          "<td>" + esc(who) + "</td>" +
+          '<td><button class="recover" data-id="' + esc(it.id) + '" data-title="' + esc(it.title) + '">撤销</button></td>';
+        body.appendChild(tr);
+      });
+    } catch (e) {}
+  }
+
+  $("btn-admin-archive").addEventListener("click", loadAdminArchive);
+
+  $("admin-archive-body").addEventListener("click", async function (e) {
+    var btn = e.target.closest ? e.target.closest("button.recover") : null;
+    if (!btn) { return; }
+    if (!confirm("确认撤销「" + btn.getAttribute("data-title") + "」的已找回状态？该物品会重新出现在公网查询中")) { return; }
+    try {
+      var r = await fetch("/api/recover", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-Admin-Password": adminPass },
+        body: JSON.stringify({ id: btn.getAttribute("data-id"), operator: "管理员撤销", contact: "-" })
+      });
+      if (r.status === 401) {
+        adminPass = "";
+        sessionStorage.removeItem("xyq_admin_pass");
+        openAdminLogin();
+        return;
+      }
+      var j = await r.json();
+      if (!r.ok || j.ok === false) { throw new Error(j.error || ("接口返回 " + r.status)); }
+      setStatus(adminStatus, "已撤销，物品重新出现在公网查询中", "ok");
+      loadAdminArchive();
+      loadAdmin();
+      boot();
+    } catch (err) {
+      setStatus(adminStatus, "撤销失败：" + (err && err.message ? err.message : err), "err");
+    }
+  });
 
   async function loadAdmin() {
     if (!adminPass) { openAdminLogin(); return; }
@@ -676,7 +812,7 @@
           '<div class="info"><strong>' + esc(it.title) + "</strong><br>" +
           "<span>" + esc(it.detail) + "</span><br>" +
           "<span>" + who + " · 编号 " + esc(it.id) + "</span></div>" +
-          '<button class="recover" data-id="' + esc(it.id) + '" data-title="' + esc(it.title) + '">撤销</button>';
+          '<span class="badge-done">已找回</span>';
         list.appendChild(el);
       });
       setStatus(arcStatus, "已找回记录 " + rows.length + " 条", "ok");
@@ -684,41 +820,6 @@
       setStatus(arcStatus, "加载失败：" + (e && e.message ? e.message : e), "err");
     }
   }
-
-  $("arc-list").addEventListener("click", async function (e) {
-    var btn = e.target.closest ? e.target.closest("button.recover") : null;
-    if (!btn) { return; }
-    var title = btn.getAttribute("data-title");
-    if (!confirm("确认撤销「" + title + "」的已找回状态？该记录将重新出现在查询结果中")) { return; }
-    if (!adminPass) {
-      setStatus(arcStatus, "撤销需要管理员权限，请先完成验证", "err");
-      openAdminLogin();
-      return;
-    }
-    btn.disabled = true;
-    try {
-      var r = await fetch("/api/recover", {
-        method: "POST",
-        headers: { "Content-Type": "application/json", "X-Admin-Password": adminPass },
-        body: JSON.stringify({ id: btn.getAttribute("data-id"), operator: "撤销操作", contact: "-" })
-      });
-      if (r.status === 401) {
-        adminPass = "";
-        sessionStorage.removeItem("xyq_admin_pass");
-        setStatus(arcStatus, "管理员凭证已失效，请重新验证", "err");
-        openAdminLogin();
-        return;
-      }
-      var j = await r.json();
-      if (!r.ok || j.ok === false) { throw new Error(j.error || ("接口返回 " + r.status)); }
-      setStatus(arcStatus, "已撤销，记录回到可查询状态", "ok");
-      loadArchive();
-      boot();
-    } catch (err) {
-      setStatus(arcStatus, "撤销失败：" + (err && err.message ? err.message : err), "err");
-      btn.disabled = false;
-    }
-  });
 
   $("btn-reg").addEventListener("click", register);
   $("btn-qry").addEventListener("click", search);

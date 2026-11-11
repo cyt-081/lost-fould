@@ -55,14 +55,18 @@ MAX_TEXT = int(os.environ.get("MAX_TEXT", "600"))
 RATE_LIMIT = int(os.environ.get("RATE_LIMIT_PER_MIN", "12"))
 STARTED_AT = time.time()
 
-ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "admin123")
-ADMIN_LOGIN_PATH = os.environ.get("ADMIN_LOGIN_PATH", "admin-secret-login").strip("/")
+ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "Cyt081@Lost2026!")
+ADMIN_LOGIN_PATH = os.environ.get("ADMIN_LOGIN_PATH", "admin-secret-login").strip("/")  # 想改隐藏路径就在这里改
 ADMIN_FAIL_LIMIT = int(os.environ.get("ADMIN_FAIL_LIMIT", "5"))
 ADMIN_FAIL_WINDOW = int(os.environ.get("ADMIN_FAIL_WINDOW", "600"))
 PHONE_RE = re.compile(r"^1\d{10}$")
 
 STATUS_ACTIVE = "active"
 STATUS_RESOLVED = "resolved"
+APPLY_PENDING = "pending"
+APPLY_APPROVED = "approved"
+APPLY_REJECTED = "rejected"
+APPLY_INVALIDATED = "invalidated"
 NAME_SUFFIXES = ("同学", "老师", "先生", "女士", "师傅", "学姐", "学长")
 
 _index_rows = []
@@ -699,6 +703,119 @@ def admin_applications():
         })
     rows.sort(key=lambda r: r.get("latest_at") or "", reverse=True)
     return jsonify({"ok": True, "total": len(rows), "items": rows})
+
+
+# ---------------------------------------------------------------- 认领审核
+@app.route("/api/admin-handle-apply", methods=["POST", "OPTIONS"])
+def admin_handle_apply():
+    """管理员通过/拒绝某条认领申请。
+
+    approve：该物品状态置为 resolved（立刻从公网查询消失）；当前申请=已交接；
+             同一物品下其它待核实申请=已失效。
+    reject ：当前申请=已拒绝；物品保持 active。
+    """
+    if request.method == "OPTIONS":
+        return ("", 204)
+    supplied, error = admin_supplied()
+    if error:
+        return jsonify({"ok": False, "error": error}), 400
+    if not admin_ok(supplied):
+        return jsonify({"ok": False, "error": "处理申请需要管理员权限"}), 401
+
+    payload = request.get_json(silent=True) or {}
+    item_id = str(payload.get("id") or "").strip()
+    applicant = str(payload.get("applicant") or payload.get("name") or "").strip()
+    action = str(payload.get("action") or "").strip().lower()
+    if not item_id:
+        return jsonify({"ok": False, "error": "缺少物品 ID"}), 400
+    if not applicant:
+        return jsonify({"ok": False, "error": "缺少申请人姓名"}), 400
+    if action not in ("approve", "reject"):
+        return jsonify({"ok": False, "error": "action 只能是 approve 或 reject"}), 400
+
+    item = find_item(item_id)
+    if item is None:
+        return jsonify({"ok": False, "error": "没有找到这条记录"}), 404
+    if action == "approve" and item.get("status") == STATUS_RESOLVED:
+        return jsonify({"ok": False, "error": "该物品已经是已找回状态"}), 409
+
+    now = time.strftime("%Y-%m-%d %H:%M:%S")
+    result = {"found": False, "invalidated": 0}
+
+    def mutate(target):
+        logs = target.setdefault("apply_log", [])
+        index = -1
+        for idx, entry in enumerate(logs):
+            if (str(entry.get("applicant", "")).strip() == applicant
+                    and entry.get("state", APPLY_PENDING) == APPLY_PENDING):
+                index = idx
+                break
+        if index < 0:
+            return
+        result["found"] = True
+
+        if action == "approve":
+            for idx, entry in enumerate(logs):
+                if idx == index:
+                    entry["state"] = APPLY_APPROVED
+                    entry["handled_at"] = now
+                    entry["handled_by"] = "管理员"
+                elif entry.get("state", APPLY_PENDING) == APPLY_PENDING:
+                    entry["state"] = APPLY_INVALIDATED
+                    entry["handled_at"] = now
+                    entry["note"] = "物品已交接，本条申请自动失效"
+                    result["invalidated"] += 1
+            target["status"] = STATUS_RESOLVED
+            target["resolved_at"] = now
+            target.setdefault("audit_log", []).append({
+                "action": "approve_apply",
+                "operator": applicant,
+                "contact": logs[index].get("contact", ""),
+                "at": now,
+                "by": "admin",
+            })
+        else:
+            logs[index]["state"] = APPLY_REJECTED
+            logs[index]["handled_at"] = now
+            logs[index]["handled_by"] = "管理员"
+
+    updated = update_item(item_id, mutate)
+    if updated is None:
+        return jsonify({"ok": False, "error": "更新失败，请重试"}), 500
+    if not result["found"]:
+        return jsonify({"ok": False, "error": "该申请人没有待核实的申请"}), 404
+    index_rows()
+    log("[admin] %s 申请：物品=%s 申请人=%s 失效=%d" % (action, item_id, applicant, result["invalidated"]))
+    return jsonify({
+        "ok": True,
+        "action": action,
+        "item_status": updated.get("status"),
+        "invalidated": result["invalidated"],
+        "message": ("已通过，物品已标记为已找回，其它待核实申请已失效" if action == "approve"
+                    else "已拒绝，物品保持可查询"),
+        "item": admin_item(updated),
+    })
+
+
+@app.route("/api/admin-items", methods=["GET", "OPTIONS"])
+def admin_items():
+    """管理员用：返回完整字段（含状态），供后台归档列表使用。"""
+    if request.method == "OPTIONS":
+        return ("", 204)
+    supplied, error = admin_supplied()
+    if error:
+        return jsonify({"ok": False, "error": error}), 400
+    if not admin_ok(supplied):
+        return jsonify({"ok": False, "error": "需要管理员权限"}), 401
+    limit = parse_int(request.args.get("limit") or 100, 100, 1, 200)
+    if limit is None:
+        return jsonify({"ok": False, "error": "limit 参数非法"}), 400
+    wanted = (request.args.get("status") or "").strip().lower()
+    rows = store.all()
+    if wanted in (STATUS_ACTIVE, STATUS_RESOLVED):
+        rows = [item for item in rows if item.get("status") == wanted]
+    rows = sorted(rows, key=lambda r: r.get("resolved_at") or r.get("created_at") or "", reverse=True)[:limit]
+    return jsonify({"ok": True, "status": wanted or "all", "total": len(rows), "items": [admin_item(r) for r in rows]})
 
 
 # ---------------------------------------------------------------- 数据清洗
