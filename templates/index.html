@@ -311,9 +311,8 @@
   var healthCache = null;
   async function boot() {
     try {
-      var url = "/api/health";
-      if (adminPass) { url += "?password=" + encodeURIComponent(adminPass); }
-      var r = await fetch(url, { cache: "no-store" });
+      var headers = adminPass ? { "X-Admin-Password": adminPass } : {};
+      var r = await fetch("/api/health", { cache: "no-store", headers: headers });
       healthCache = await r.json();
     } catch (e) {
       healthCache = null;
@@ -585,7 +584,7 @@
     btn.disabled = true;
     $("admin-err").textContent = "";
     try {
-      var r = await fetch("/api/admin-applications?password=" + encodeURIComponent(pass));
+      var r = await fetch("/api/admin-applications", { headers: { "X-Admin-Password": pass } });
       var j = await r.json();
       if (!r.ok || j.ok === false) { throw new Error(j.error || ("接口返回 " + r.status)); }
       adminPass = pass;
@@ -626,7 +625,7 @@
     if (!adminPass) { openAdminLogin(); return; }
     setStatus(adminStatus, "加载中…", "run");
     try {
-      var r = await fetch("/api/admin-applications?password=" + encodeURIComponent(adminPass));
+      var r = await fetch("/api/admin-applications", { headers: { "X-Admin-Password": adminPass } });
       var j = await r.json();
       if (r.status === 401) {
         adminPass = "";
@@ -691,12 +690,25 @@
     if (!btn) { return; }
     var title = btn.getAttribute("data-title");
     if (!confirm("确认撤销「" + title + "」的已找回状态？该记录将重新出现在查询结果中")) { return; }
+    if (!adminPass) {
+      setStatus(arcStatus, "撤销需要管理员权限，请先完成验证", "err");
+      openAdminLogin();
+      return;
+    }
     btn.disabled = true;
     try {
       var r = await fetch("/api/recover", {
-        method: "POST", headers: { "Content-Type": "application/json" },
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-Admin-Password": adminPass },
         body: JSON.stringify({ id: btn.getAttribute("data-id"), operator: "撤销操作", contact: "-" })
       });
+      if (r.status === 401) {
+        adminPass = "";
+        sessionStorage.removeItem("xyq_admin_pass");
+        setStatus(arcStatus, "管理员凭证已失效，请重新验证", "err");
+        openAdminLogin();
+        return;
+      }
       var j = await r.json();
       if (!r.ok || j.ok === false) { throw new Error(j.error || ("接口返回 " + r.status)); }
       setStatus(arcStatus, "已撤销，记录回到可查询状态", "ok");

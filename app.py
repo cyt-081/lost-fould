@@ -19,6 +19,7 @@ import time
 from flask import Flask, jsonify, render_template, request
 
 import matcher
+import scrub
 import zhipu_client
 from store import Store
 
@@ -48,7 +49,8 @@ app.config["JSON_AS_ASCII"] = False
 
 store = Store()
 MODEL = os.environ.get("ZHIPU_MODEL", "glm-4-flash")
-ALLOW_CORS = os.environ.get("ALLOW_CORS", "1") == "1"
+ALLOWED_ORIGINS = [o.strip() for o in os.environ.get("ALLOWED_ORIGINS", "").split(",") if o.strip()]
+APPLY_RATE_LIMIT = int(os.environ.get("APPLY_RATE_LIMIT", "5"))
 MAX_TEXT = int(os.environ.get("MAX_TEXT", "600"))
 RATE_LIMIT = int(os.environ.get("RATE_LIMIT_PER_MIN", "12"))
 STARTED_AT = time.time()
@@ -269,6 +271,19 @@ def public_item(item):
     copy["apply_count"] = len(item.get("apply_log") or [])
     copy["owner_hint"] = mask_name(item.get("owner_name", ""))
     copy["has_owner"] = bool((item.get("owner_name") or "").strip())
+    # 顶层敏感字段：只给脱敏值，原始文本一律不下发
+    copy["owner_name"] = mask_name(item.get("owner_name", ""))
+    copy["contact"] = mask_contact(item.get("contact"))
+    copy.pop("raw_text", None)
+    return copy
+
+
+def admin_item(item):
+    """管理员视图：保留完整字段，仅供已鉴权请求使用。"""
+    copy = dict(item)
+    copy["apply_count"] = len(item.get("apply_log") or [])
+    copy["owner_hint"] = mask_name(item.get("owner_name", ""))
+    copy["has_owner"] = bool((item.get("owner_name") or "").strip())
     return copy
 
 
@@ -289,11 +304,40 @@ ensure_schema()
 
 @app.after_request
 def add_headers(resp):
-    if ALLOW_CORS:
-        resp.headers["Access-Control-Allow-Origin"] = "*"
-        resp.headers["Access-Control-Allow-Headers"] = "Content-Type"
+    resp.headers["X-Content-Type-Options"] = "nosniff"
+    resp.headers["X-Frame-Options"] = "DENY"
+    resp.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    resp.headers["Permissions-Policy"] = "geolocation=(), microphone=(), camera=()"
+    resp.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+    resp.headers["Content-Security-Policy"] = (
+        "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; "
+        "img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'"
+    )
+    origin = request.headers.get("Origin")
+    if origin and origin in ALLOWED_ORIGINS:
+        resp.headers["Access-Control-Allow-Origin"] = origin
+        resp.headers["Vary"] = "Origin"
+        resp.headers["Access-Control-Allow-Headers"] = "Content-Type, X-Admin-Password"
         resp.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
     return resp
+
+
+def parse_int(value, default, low, high):
+    """严格解析整型参数，非法返回 None。"""
+    try:
+        number = int(str(value))
+    except (TypeError, ValueError):
+        return None
+    return max(low, min(number, high))
+
+
+def safe_text(value, maxlen):
+    """清洗用户输入：去掉控制字符，禁掉尖括号（防存储型 XSS）。"""
+    text = str(value or "").strip()
+    text = re.sub(r"[\x00-\x1f\x7f]", "", text)
+    if "<" in text or ">" in text:
+        return None
+    return text[:maxlen]
 
 
 # ---------------------------------------------------------------- 页面与健康
@@ -318,7 +362,7 @@ def health():
         "active": len([i for i in items if i.get("status") == STATUS_ACTIVE]),
         "resolved": len([i for i in items if i.get("status") == STATUS_RESOLVED]),
     }
-    supplied = request.args.get("password") or request.headers.get("X-Admin-Password") or ""
+    supplied = request.headers.get("X-Admin-Password") or ""
     if admin_ok(supplied):
         data.update({
             "service": "campus-lostfound",
@@ -356,7 +400,10 @@ def register():
     fields, source = zhipu_client.extract(text)
     if contact_raw:
         fields["contact"] = contact_raw[:40]
-    owner = (payload.get("owner_name") or "").strip() or extract_owner_name(text)
+    owner = safe_text(payload.get("owner_name"), 20)
+    if owner is None:
+        return jsonify({"ok": False, "error": "登记人姓名包含非法字符"}), 400
+    owner = owner or extract_owner_name(text)
 
     fields["raw_text"] = text
     fields["owner_name"] = owner
@@ -387,11 +434,12 @@ def query():
     if request.method == "POST":
         payload = request.get_json(silent=True) or {}
         q = (payload.get("q") or payload.get("query") or "").strip()
-        limit = int(payload.get("limit") or 10)
+        limit = parse_int(payload.get("limit") or 10, 10, 1, 30)
     else:
         q = (request.args.get("q") or "").strip()
-        limit = int(request.args.get("limit") or 10)
-    limit = max(1, min(limit, 30))
+        limit = parse_int(request.args.get("limit") or 10, 10, 1, 30)
+    if limit is None:
+        return jsonify({"ok": False, "error": "limit 参数非法"}), 400
     wanted_type = (request.args.get("type") or request.args.get("action_type") or "").strip().lower()
     if wanted_type not in ("lost", "found"):
         wanted_type = ""
@@ -417,7 +465,9 @@ def query():
 
 @app.route("/api/items")
 def items():
-    limit = max(1, min(int(request.args.get("limit") or 50), 200))
+    limit = parse_int(request.args.get("limit") or 50, 50, 1, 100)
+    if limit is None:
+        return jsonify({"ok": False, "error": "limit 参数非法"}), 400
     wanted = (request.args.get("status") or "active").strip().lower()
     rows = store.all()
     if wanted in (STATUS_ACTIVE, STATUS_RESOLVED):
@@ -433,10 +483,12 @@ def resolve():
         return ("", 204)
     payload = request.get_json(silent=True) or {}
     item_id = str(payload.get("id") or "").strip()
-    operator = str(payload.get("operator") or "").strip()
+    operator = safe_text(payload.get("operator"), 20)
     contact = str(payload.get("contact") or "").strip()
     if not item_id:
         return jsonify({"ok": False, "error": "缺少物品 ID"}), 400
+    if operator is None:
+        return jsonify({"ok": False, "error": "操作人姓名包含非法字符"}), 400
     if not operator:
         return jsonify({"ok": False, "error": "请填写操作人姓名"}), 400
     if not contact:
@@ -488,6 +540,11 @@ def resolve():
 def recover():
     if request.method == "OPTIONS":
         return ("", 204)
+    supplied, error = admin_supplied()
+    if error:
+        return jsonify({"ok": False, "error": error}), 400
+    if not admin_ok(supplied):
+        return jsonify({"ok": False, "error": "撤销操作需要管理员权限"}), 401
     payload = request.get_json(silent=True) or {}
     item_id = str(payload.get("id") or "").strip()
     operator = str(payload.get("operator") or "").strip() or "系统撤销"
@@ -527,10 +584,12 @@ def apply_contact():
         return ("", 204)
     payload = request.get_json(silent=True) or {}
     item_id = str(payload.get("id") or "").strip()
-    applicant = str(payload.get("name") or payload.get("applicant") or "").strip()
+    applicant = safe_text(payload.get("name") or payload.get("applicant"), 20)
     contact = str(payload.get("contact") or "").strip()
     if not item_id:
         return jsonify({"ok": False, "error": "缺少物品 ID"}), 400
+    if applicant is None:
+        return jsonify({"ok": False, "error": "姓名包含非法字符"}), 400
     if not applicant:
         return jsonify({"ok": False, "error": "请填写您的姓名"}), 400
     if not contact:
@@ -544,7 +603,7 @@ def apply_contact():
     contact = phone
 
     ip = (request.headers.get("X-Forwarded-For") or request.remote_addr or "?").split(",")[0].strip()
-    if not rate_ok(ip + ":apply", limit=20):
+    if not rate_ok(ip + ":apply", limit=APPLY_RATE_LIMIT):
         return jsonify({"ok": False, "error": "提交太频繁了，请稍后再试"}), 429
 
     item = find_item(item_id)
@@ -582,16 +641,29 @@ def admin_ok(candidate):
     return bool(candidate) and hmac.compare_digest(candidate, ADMIN_PASSWORD)
 
 
+def admin_supplied():
+    """返回 (password, error)：密码只允许走请求体或 X-Admin-Password 头。"""
+    if request.args.get("password"):
+        return "", "请勿在 URL 中传递密码，请改用请求头 X-Admin-Password 或请求体"
+    payload = request.get_json(silent=True) or {}
+    password = payload.get("password") or request.headers.get("X-Admin-Password") or ""
+    return str(password).strip(), ""
+
+
 @app.route("/api/admin-applications", methods=["GET", "POST", "OPTIONS"])
 def admin_applications():
     if request.method == "OPTIONS":
         return ("", 204)
-    payload = request.get_json(silent=True) or {}
-    supplied = (request.args.get("password")
-                or payload.get("password")
-                or request.headers.get("X-Admin-Password")
-                or "")
+    supplied, error = admin_supplied()
+    if error:
+        return jsonify({"ok": False, "error": error}), 400
     ip = client_ip()
+    if admin_lock_left(ip) > 0 and not admin_ok(supplied):
+        left = admin_lock_left(ip)
+        fails = admin_record_fail(ip)
+        log("[admin] 锁定期间继续尝试 IP=%s 累计第 %d 次" % (ip, fails))
+        return jsonify({"ok": False, "error": "尝试次数过多，请 %d 秒后再试" % left,
+                        "fail_count": fails}), 401
     if not admin_ok(supplied):
         fails = admin_record_fail(ip)
         log("[admin] 密码错误 IP=%s 累计第 %d 次" % (ip, fails))
@@ -615,6 +687,8 @@ def admin_applications():
             "created_at": item.get("created_at", ""),
             "apply_count": len(applies),
             "latest_at": applies[-1].get("at", ""),
+            "owner_name": item.get("owner_name", ""),
+            "owner_contact": item.get("contact", ""),
             "applications": [
                 {"applicant": row.get("applicant", ""),
                  "contact": row.get("contact", ""),
@@ -625,6 +699,32 @@ def admin_applications():
         })
     rows.sort(key=lambda r: r.get("latest_at") or "", reverse=True)
     return jsonify({"ok": True, "total": len(rows), "items": rows})
+
+
+# ---------------------------------------------------------------- 数据清洗
+@app.route("/api/admin-scrub", methods=["POST", "OPTIONS"])
+def admin_scrub():
+    """把库里真实手机号/姓名/原始描述替换为虚构占位（需管理员 + confirm=SCRUB）。"""
+    if request.method == "OPTIONS":
+        return ("", 204)
+    supplied, error = admin_supplied()
+    if error:
+        return jsonify({"ok": False, "error": error}), 400
+    if not admin_ok(supplied):
+        return jsonify({"ok": False, "error": "数据清洗需要管理员权限"}), 401
+    payload = request.get_json(silent=True) or {}
+    if str(payload.get("confirm") or "").upper() != "SCRUB":
+        return jsonify({"ok": False, "error": "请在请求体带上 confirm: SCRUB 以确认清洗"}), 400
+
+    with store.lock:
+        touched, state = scrub.scrub_items(store.items)
+        if touched:
+            store._flush()
+    index_rows()
+    report = scrub.audit(store.all())
+    log("[admin] 数据清洗完成：改写 %d 条，统计 %s，残留 %s" % (touched, state, report))
+    return jsonify({"ok": True, "touched": touched, "stats": state, "audit": report,
+                    "total": len(store.items)})
 
 
 @app.errorhandler(404)
