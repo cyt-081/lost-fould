@@ -54,6 +54,9 @@ RATE_LIMIT = int(os.environ.get("RATE_LIMIT_PER_MIN", "12"))
 STARTED_AT = time.time()
 
 ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "admin123")
+ADMIN_LOGIN_PATH = os.environ.get("ADMIN_LOGIN_PATH", "admin-secret-login").strip("/")
+ADMIN_FAIL_LIMIT = int(os.environ.get("ADMIN_FAIL_LIMIT", "5"))
+ADMIN_FAIL_WINDOW = int(os.environ.get("ADMIN_FAIL_WINDOW", "600"))
 PHONE_RE = re.compile(r"^1\d{10}$")
 
 STATUS_ACTIVE = "active"
@@ -65,6 +68,51 @@ _index_key = None
 _index_lock = threading.Lock()
 _rate_lock = threading.Lock()
 _rate_hits = {}
+_admin_fails = {}
+_admin_lock = threading.Lock()
+
+
+# ---------------------------------------------------------------- 日志与鉴权计数
+def log(msg):
+    line = "[%s] %s" % (time.strftime("%Y-%m-%d %H:%M:%S"), msg)
+    try:
+        print(line, flush=True)
+    except Exception:
+        pass
+    try:
+        app.logger.warning(line)
+    except Exception:
+        pass
+
+
+def admin_lock_left(ip):
+    now = time.time()
+    with _admin_lock:
+        rec = _admin_fails.get(ip)
+        if not rec:
+            return 0
+        count, first = rec
+        if now - first > ADMIN_FAIL_WINDOW:
+            _admin_fails.pop(ip, None)
+            return 0
+        if count >= ADMIN_FAIL_LIMIT:
+            return int(ADMIN_FAIL_WINDOW - (now - first))
+        return 0
+
+
+def admin_record_fail(ip):
+    now = time.time()
+    with _admin_lock:
+        rec = _admin_fails.get(ip)
+        if not rec or now - rec[1] > ADMIN_FAIL_WINDOW:
+            _admin_fails[ip] = [1, now]
+        else:
+            rec[0] += 1
+        return _admin_fails[ip][0]
+
+
+def client_ip():
+    return (request.headers.get("X-Forwarded-For") or request.remote_addr or "?").split(",")[0].strip()
 
 
 # ---------------------------------------------------------------- 工具函数
@@ -147,6 +195,9 @@ def fill_defaults(item):
         changed = True
     if "owner_name" not in item:
         item["owner_name"] = extract_owner_name(item.get("raw_text", ""))
+        changed = True
+    if item.get("action_type") not in ("lost", "found"):
+        item["action_type"] = item.get("kind") if item.get("kind") in ("lost", "found") else "found"
         changed = True
     return changed
 
@@ -248,29 +299,35 @@ def add_headers(resp):
 # ---------------------------------------------------------------- 页面与健康
 @app.route("/")
 def home():
-    items = store.all()
-    return render_template(
-        "index.html",
-        model=MODEL,
-        llm_ready=bool(zhipu_client.api_key()),
-        active=len([i for i in items if i.get("status") == STATUS_ACTIVE]),
-        resolved=len([i for i in items if i.get("status") == STATUS_RESOLVED]),
-    )
+    return render_template("index.html", admin_boot=False)
+
+
+@app.route("/" + ADMIN_LOGIN_PATH, methods=["GET"])
+def admin_secret_login():
+    """隐藏入口：只有知道这个地址的人才能看到密码框，主页不留任何链接。"""
+    log("[admin] 访问隐藏登录页：%s" % ADMIN_LOGIN_PATH)
+    return render_template("index.html", admin_boot=True)
 
 
 @app.route("/api/health")
 def health():
+    """公开只给条数；模型等技术细节只对校验通过的管理员返回。"""
     items = store.all()
-    return jsonify({
+    data = {
         "ok": True,
-        "service": "campus-lostfound",
-        "items": len(items),
         "active": len([i for i in items if i.get("status") == STATUS_ACTIVE]),
         "resolved": len([i for i in items if i.get("status") == STATUS_RESOLVED]),
-        "model": MODEL,
-        "llm_ready": bool(zhipu_client.api_key()),
-        "uptime_sec": round(time.time() - STARTED_AT, 1),
-    })
+    }
+    supplied = request.args.get("password") or request.headers.get("X-Admin-Password") or ""
+    if admin_ok(supplied):
+        data.update({
+            "service": "campus-lostfound",
+            "items": len(items),
+            "model": MODEL,
+            "llm_ready": bool(zhipu_client.api_key()),
+            "uptime_sec": round(time.time() - STARTED_AT, 1),
+        })
+    return jsonify(data)
 
 
 # ---------------------------------------------------------------- 登记
@@ -288,16 +345,26 @@ def register():
         return jsonify({"ok": False, "error": "请先写一段描述"}), 400
     text = text[:MAX_TEXT]
 
+    contact_raw = str(payload.get("contact") or "").strip()
+    if contact_raw:
+        phone = re.sub(r"[\s\-]", "", contact_raw)
+        if not PHONE_RE.match(phone):
+            return jsonify({"ok": False, "error": "号码格式不正确，请输入 1 开头的 11 位手机号"}), 400
+        contact_raw = phone
+
     started = time.time()
     fields, source = zhipu_client.extract(text)
-    if payload.get("contact"):
-        fields["contact"] = str(payload["contact"])[:40]
+    if contact_raw:
+        fields["contact"] = contact_raw[:40]
     owner = (payload.get("owner_name") or "").strip() or extract_owner_name(text)
 
     fields["raw_text"] = text
     fields["owner_name"] = owner
     fields["detail"] = build_detail(fields)
     fields["extracted_by"] = source
+    fields["action_type"] = fields.get("action_type") or (
+        fields.get("kind") if fields.get("kind") in ("lost", "found") else "found")
+    fields["kind"] = fields["action_type"]
     fields["status"] = STATUS_ACTIVE
     fields["audit_log"] = []
     item = store.add(fields)
@@ -325,11 +392,16 @@ def query():
         q = (request.args.get("q") or "").strip()
         limit = int(request.args.get("limit") or 10)
     limit = max(1, min(limit, 30))
+    wanted_type = (request.args.get("type") or request.args.get("action_type") or "").strip().lower()
+    if wanted_type not in ("lost", "found"):
+        wanted_type = ""
     if not q:
         return jsonify({"ok": False, "error": "请输入要找的物品"}), 400
 
     started = time.time()
     rows = active_rows()
+    if wanted_type:
+        rows = [row for row in rows if (row["item"].get("action_type") or row["item"].get("kind")) == wanted_type]
     cards = matcher.search(store.all(), rows, q, limit=limit)
     by_id = {row["item"]["id"]: row["item"] for row in rows}
     for card in cards:
@@ -337,8 +409,10 @@ def query():
         card["owner_hint"] = mask_name(item.get("owner_name", ""))
         card["has_owner"] = bool((item.get("owner_name") or "").strip())
         card["apply_count"] = len(item.get("apply_log") or [])
+        card["action_type"] = item.get("action_type") or item.get("kind") or "found"
     cost = round((time.time() - started) * 1000, 2)
-    return jsonify({"ok": True, "query": q, "scanned": len(rows), "cost_ms": cost, "cards": cards})
+    return jsonify({"ok": True, "query": q, "type": wanted_type, "scanned": len(rows),
+                    "cost_ms": cost, "cards": cards})
 
 
 @app.route("/api/items")
@@ -517,8 +591,15 @@ def admin_applications():
                 or payload.get("password")
                 or request.headers.get("X-Admin-Password")
                 or "")
+    ip = client_ip()
     if not admin_ok(supplied):
-        return jsonify({"ok": False, "error": "管理员密码不正确"}), 401
+        fails = admin_record_fail(ip)
+        log("[admin] 密码错误 IP=%s 累计第 %d 次" % (ip, fails))
+        left = admin_lock_left(ip)
+        if left:
+            return jsonify({"ok": False, "error": "尝试次数过多，请 %d 秒后再试" % left,
+                            "fail_count": fails}), 401
+        return jsonify({"ok": False, "error": "管理员密码不正确", "fail_count": fails}), 401
 
     rows = []
     for item in store.all():
@@ -550,7 +631,7 @@ def admin_applications():
 def not_found(_error):
     if request.path.startswith("/api/"):
         return jsonify({"ok": False, "error": "not found"}), 404
-    return render_template("index.html", model=MODEL, llm_ready=bool(zhipu_client.api_key()), active=0, resolved=0), 404
+    return render_template("index.html", admin_boot=False), 404
 
 
 @app.errorhandler(500)

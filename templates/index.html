@@ -69,12 +69,6 @@
     padding: 7px 14px; font-size: 12px; font-weight: 700; border-radius: 999px; cursor: pointer;
     border: 1px solid #ffd8a8; background: #fff7ea; color: #b35c00; font-family: inherit;
   }
-  .topbar { display: flex; justify-content: flex-end; margin-bottom: 6px; }
-  button.admin-entry {
-    padding: 6px 14px; font-size: 12px; font-weight: 600; border-radius: 999px; cursor: pointer;
-    border: 1px solid var(--line); background: #eff2f8; color: #7c88a1; font-family: inherit;
-  }
-  button.admin-entry:hover { color: #44506b; border-color: #c9d4e8; }
   .admin-table { width: 100%; border-collapse: collapse; margin-top: 14px; font-size: 13px; }
   .admin-table th, .admin-table td { text-align: left; padding: 10px 12px; border-bottom: 1px solid var(--line); vertical-align: top; }
   .admin-table th { color: var(--muted); font-weight: 700; background: #f7f9fd; font-size: 12px; }
@@ -83,6 +77,19 @@
   .admin-table .when { color: #98a5bf; font-size: 11px; }
   .badge-pending { background: #fff4e6; color: #b35c00; border-radius: 999px; padding: 2px 8px; font-size: 11px; font-weight: 700; }
   .tip { font-size: 12px; color: var(--muted); }
+  .filters { display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap; }
+  .flt {
+    padding: 6px 15px; font-size: 12.5px; font-weight: 700; border-radius: 999px; cursor: pointer;
+    border: 1px solid var(--line); background: #fff; color: var(--muted); font-family: inherit;
+  }
+  .flt:hover { border-color: var(--brand-2); color: var(--brand); }
+  .flt.active { background: #eef3ff; border-color: #c7d8ff; color: #2f6df6; }
+  .tag {
+    display: inline-block; padding: 2px 9px; border-radius: 999px; font-size: 11px; font-weight: 700;
+    margin-right: 8px; vertical-align: 2px;
+  }
+  .tag-lost { background: #ffecec; color: #d6336c; border: 1px solid #ffc9c9; }
+  .tag-found { background: #e6fcf5; color: #0f7d5a; border: 1px solid #b2ecd4; }
   .hint {
     margin-top: 12px; padding: 10px 14px; border-radius: 10px; font-size: 12.5px; line-height: 1.7;
     color: #6b7a99; background: #f6f8fd; border: 1px dashed #dbe4f5;
@@ -136,14 +143,11 @@
   }
 </style>
 </head>
-<body>
+<body data-admin-boot="{{ '1' if admin_boot else '0' }}">
 <div class="wrap">
-  <div class="topbar"><button class="admin-entry" id="btn-admin">管理员入口</button></div>
-
   <header>
-    <span class="pill"><span class="dot"></span><span id="boot">正在连接云端服务…</span></span>
     <h1>校园失物招领</h1>
-    <p>登记用大模型理解你的描述，查询用本地索引毫秒级返回</p>
+    <p>把捡到的东西登记一下，也许正是别人在找的</p>
   </header>
 
   <div class="tabs">
@@ -157,7 +161,7 @@
     <textarea id="reg-text" placeholder="例如：昨天下午在图书馆二楼自习，走的时候把一把黑色的长柄雨伞落在座位上了，伞柄有点磨损"></textarea>
     <div class="row">
       <input type="text" id="reg-owner" placeholder="登记人姓名（选填，找回时需要核验）" style="flex:1 1 180px" />
-      <input type="text" id="reg-contact" placeholder="联系方式（选填，展示时自动脱敏）" style="flex:1 1 180px" />
+      <input type="text" id="reg-contact" placeholder="手机号（选填，不对外公开）" style="flex:1 1 180px" />
     </div>
     <div class="row">
       <button class="primary" id="btn-reg">提交登记</button>
@@ -174,6 +178,11 @@
       <button class="primary" id="btn-qry">立即查找</button>
     </div>
     <div class="hint">💡 为了保护隐私，联系方式已脱敏。如需认领，请点击卡片上的按钮申请。</div>
+    <div class="filters" id="filters">
+      <button class="flt active" data-type="all">全部</button>
+      <button class="flt" data-type="lost">🔍 寻物</button>
+      <button class="flt" data-type="found">🎁 招领</button>
+    </div>
     <div class="status" id="qry-status"></div>
     <div class="grid" id="grid"></div>
     <div class="empty" id="empty" style="display:none">没有匹配的记录，换个颜色或地点试试</div>
@@ -197,6 +206,7 @@
       <button class="ghost" id="btn-admin-exit">退出管理员</button>
       <span class="tip">含完整联系方式，仅供管理员核实后转达，请勿截图外传</span>
     </div>
+    <div class="hint" id="admin-health">状态信息加载中…</div>
     <div class="status" id="admin-status"></div>
     <table class="admin-table" id="admin-table">
       <thead>
@@ -207,9 +217,7 @@
     <div class="empty" id="admin-empty" style="display:none">暂无认领申请</div>
   </section>
 
-  <footer>
-    登记走大模型（<code id="model-name">glm-4-flash</code>），查询走本地索引 · 联系方式与操作人自动脱敏
-  </footer>
+  <footer>校园失物招领 · 请如实填写信息，方便失主与拾获者尽快对接</footer>
 </div>
 
 <div class="overlay" id="overlay">
@@ -294,52 +302,70 @@
     if (bar) { bar.style.display = (which === "admin") ? "none" : "flex"; }
     if (which === "arc") { loadArchive(); }
     if (which === "qry") { $("qry-text").focus(); }
-    if (which === "admin") { loadAdmin(); }
+    if (which === "admin") { loadAdmin(); renderHealth(); }
   }
   $("tab-reg").addEventListener("click", function () { showTab("reg"); });
   $("tab-qry").addEventListener("click", function () { showTab("qry"); });
   $("tab-arc").addEventListener("click", function () { showTab("arc"); });
 
+  var healthCache = null;
   async function boot() {
     try {
-      var r = await fetch("/api/health", { cache: "no-store" });
-      var j = await r.json();
-      $("boot").textContent = "服务在线 · 可查询 " + j.active + " 条 · 已找回 " + j.resolved +
-        " 条 · " + (j.llm_ready ? "大模型已就绪" : "大模型未配置（走本地规则）");
-      $("model-name").textContent = j.model || "-";
+      var url = "/api/health";
+      if (adminPass) { url += "?password=" + encodeURIComponent(adminPass); }
+      var r = await fetch(url, { cache: "no-store" });
+      healthCache = await r.json();
     } catch (e) {
-      $("boot").textContent = "服务连接失败";
+      healthCache = null;
     }
+    renderHealth();
+  }
+  function renderHealth() {
+    var box = $("admin-health");
+    if (!box) { return; }
+    var j = healthCache;
+    if (!j || j.ok !== true) { box.textContent = "状态获取失败：健康检查不可用"; return; }
+    box.textContent = "服务在线 · 收录 " + (j.items || "-") + " 条 · 可查询 " + j.active + " 条 · 已找回 " +
+      j.resolved + " 条 · 模型 " + (j.model || "-") + " · " +
+      (j.llm_ready ? "大模型已就绪" : "大模型未配置");
   }
 
   async function register() {
     var text = $("reg-text").value.trim();
     if (!text) { setStatus(regStatus, "先写一段描述吧", "err"); $("reg-text").focus(); return; }
+    var regContact = $("reg-contact").value.trim();
+    if (regContact && !/^1\d{10}$/.test(regContact)) {
+      setStatus(regStatus, "号码格式不正确，请输入 1 开头的 11 位手机号（也可以留空）", "err");
+      $("reg-contact").focus();
+      return;
+    }
     var btn = $("btn-reg");
     btn.disabled = true;
     $("reg-chips").innerHTML = "";
-    setStatus(regStatus, "正在调用大模型理解你的描述，通常 2-6 秒…", "run");
+    setStatus(regStatus, "正在理解你的描述，通常 2-6 秒…", "run");
     try {
       var r = await fetch("/api/register", {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           text: text,
           owner_name: $("reg-owner").value.trim(),
-          contact: $("reg-contact").value.trim()
+          contact: regContact
         })
       });
       var j = await r.json();
       if (!r.ok || j.ok === false) { throw new Error(j.error || ("接口返回 " + r.status)); }
       var item = j.item;
       var chips = [];
-      chips.push('<span class="chip">' + esc(item.kind === "lost" ? "失主寻找" : "好心人拾获") + "</span>");
+      var regType = item.action_type || item.kind || "found";
+      chips.push('<span class="chip ' + (regType === "lost" ? "rule" : "llm") + '">' +
+        (regType === "lost" ? "🔍 寻物启事" : "🎁 失物招领") + "</span>");
       chips.push('<span class="chip">类别：' + esc(item.category || "-") + "</span>");
       if (item.color) { chips.push('<span class="chip">颜色：' + esc(item.color) + "</span>"); }
       if (item.place) { chips.push('<span class="chip">地点：' + esc(item.place) + "</span>"); }
       (item.features || []).forEach(function (f) { chips.push('<span class="chip">' + esc(f) + "</span>"); });
       chips.push('<span class="chip">状态：待认领</span>');
       chips.push('<span class="chip ' + (j.llm_used ? "llm" : "rule") + '">' +
-        (j.llm_used ? "大模型抽取" : "本地规则抽取") + " · " + j.cost_ms + " ms</span>");
+        (j.llm_used ? "智能解析" : "基础解析") + " · " + j.cost_ms + " ms</span>");
       $("reg-chips").innerHTML = chips.join("");
       setStatus(regStatus, "登记成功，编号 " + item.id + "（请记住登记人姓名，找回时需核验）", "ok");
       $("reg-text").value = "";
@@ -353,6 +379,42 @@
     }
   }
 
+  var lastCards = [];
+  var filterType = "all";
+
+  function renderCards() {
+    var grid = $("grid");
+    grid.innerHTML = "";
+    var cards = lastCards.filter(function (c) {
+      if (filterType === "all") { return true; }
+      return (c.action_type || c.kind || "found") === filterType;
+    });
+    $("empty").style.display = cards.length ? "none" : "block";
+    $("empty").textContent = lastCards.length
+      ? "当前筛选下没有结果，点「全部」看所有匹配项"
+      : "没有匹配的记录，换个颜色或地点试试";
+    cards.forEach(function (c, i) {
+      var el = document.createElement("article");
+      el.className = "card";
+      el.style.animationDelay = (i * 50) + "ms";
+      var at = c.action_type || c.kind || "found";
+      var tag = at === "lost"
+        ? '<span class="tag tag-lost">🔍 寻物启事</span>'
+        : '<span class="tag tag-found">🎁 失物招领</span>';
+      var hint = c.has_owner ? ("认领需核对姓名：" + esc(c.owner_hint)) : "该记录未登记姓名，核验将跳过";
+      var applied = c.apply_count ? (" · 已有 " + c.apply_count + " 人申请联系") : "";
+      el.innerHTML =
+        "<h3><span>" + tag + esc(c.title) + '</span><span class="score">' + c.score + "</span></h3>" +
+        "<p>" + esc(c.detail) + "</p>" +
+        '<div class="meta">' + hint + applied + "</div>" +
+        '<div class="actions"><span class="tip">编号 ' + esc(c.id) + '</span><span class="acts">' +
+        '<button class="apply" data-id="' + esc(c.id) + '" data-title="' + esc(c.title) + '">💬 申请认领/联系</button>' +
+        '<button class="done" data-id="' + esc(c.id) + '" data-title="' + esc(c.title) + '">✅ 已找回</button>' +
+        "</span></div>";
+      grid.appendChild(el);
+    });
+  }
+
   async function search() {
     var q = $("qry-text").value.trim();
     if (!q) { setStatus(qryStatus, "输入要找的物品", "err"); $("qry-text").focus(); return; }
@@ -363,33 +425,31 @@
       var r = await fetch("/api/query?q=" + encodeURIComponent(q));
       var j = await r.json();
       if (!r.ok || j.ok === false) { throw new Error(j.error || ("接口返回 " + r.status)); }
-      var grid = $("grid");
-      grid.innerHTML = "";
-      var cards = j.cards || [];
-      $("empty").style.display = cards.length ? "none" : "block";
-      cards.forEach(function (c, i) {
-        var el = document.createElement("article");
-        el.className = "card";
-        el.style.animationDelay = (i * 50) + "ms";
-        var hint = c.has_owner ? ("认领需核对姓名：" + esc(c.owner_hint)) : "该记录未登记姓名，核验将跳过";
-        var applied = c.apply_count ? (" · 已有 " + c.apply_count + " 人申请联系") : "";
-        el.innerHTML =
-          "<h3><span>" + esc(c.title) + '</span><span class="score">' + c.score + "</span></h3>" +
-          "<p>" + esc(c.detail) + "</p>" +
-          '<div class="meta">' + hint + " · 状态：待认领" + applied + "</div>" +
-          '<div class="actions"><span class="tip">编号 ' + esc(c.id) + '</span><span class="acts">' +
-          '<button class="apply" data-id="' + esc(c.id) + '" data-title="' + esc(c.title) + '">💬 申请认领/联系</button>' +
-          '<button class="done" data-id="' + esc(c.id) + '" data-title="' + esc(c.title) + '">✅ 已找回</button>' +
-          "</span></div>";
-        grid.appendChild(el);
+      lastCards = j.cards || [];
+      renderCards();
+      var lost = 0, found = 0;
+      lastCards.forEach(function (c) {
+        if ((c.action_type || c.kind) === "lost") { lost++; } else { found++; }
       });
-      setStatus(qryStatus, "扫描 " + j.scanned + " 条可查询记录，用时 " + j.cost_ms + " 毫秒", "ok");
+      setStatus(qryStatus, "扫描 " + j.scanned + " 条可查询记录，用时 " + j.cost_ms +
+        " 毫秒 · 寻物启事 " + lost + " 条 / 失物招领 " + found + " 条", "ok");
     } catch (e) {
       setStatus(qryStatus, "查询失败：" + (e && e.message ? e.message : e), "err");
     } finally {
       btn.disabled = false;
     }
   }
+
+  $("filters").addEventListener("click", function (e) {
+    var target = e.target.closest ? e.target.closest("button.flt") : null;
+    if (!target) { return; }
+    filterType = target.getAttribute("data-type");
+    var buttons = $("filters").querySelectorAll("button.flt");
+    for (var i = 0; i < buttons.length; i++) {
+      buttons[i].classList.toggle("active", buttons[i] === target);
+    }
+    renderCards();
+  });
 
   function openModal(id, title) {
     pendingResolve = { id: id, title: title };
@@ -534,6 +594,7 @@
       renderAdmin(j);
       setStatus(adminStatus, "验证通过，共 " + j.total + " 条物品收到认领申请", "ok");
       showTab("admin");
+      boot();
     } catch (e) {
       $("admin-err").textContent = (e && e.message ? e.message : String(e));
     } finally {
@@ -581,14 +642,16 @@
     }
   }
 
-  $("btn-admin").addEventListener("click", function () {
-    if (adminPass) { showTab("admin"); } else { openAdminLogin(); }
-  });
   $("admin-ok").addEventListener("click", adminLogin);
   $("admin-cancel").addEventListener("click", closeAdminLogin);
   $("admin-overlay").addEventListener("click", function (e) { if (e.target === $("admin-overlay")) { closeAdminLogin(); } });
   $("admin-pass").addEventListener("keydown", function (e) { if (e.key === "Enter") { e.preventDefault(); adminLogin(); } });
   $("btn-admin-refresh").addEventListener("click", loadAdmin);
+
+  var ADMIN_BOOT = document.body.getAttribute("data-admin-boot") === "1";
+  if (ADMIN_BOOT) {
+    if (adminPass) { showTab("admin"); } else { openAdminLogin(); }
+  }
   $("btn-admin-exit").addEventListener("click", function () {
     adminPass = "";
     sessionStorage.removeItem(ADMIN_STORE);

@@ -23,7 +23,7 @@ CATEGORY_ENUM = ["雨伞", "雨衣", "保温杯", "水壶", "耳机", "双肩包
 SYSTEM_PROMPT = (
     "你是校园失物招领平台的信息抽取引擎。用户会给你一段杂乱的自然语言，"
     "你要抽取成 JSON，只输出 JSON，不要解释、不要代码块标记。字段要求："
-    'kind：只能是 "lost"（失主在找）或 "found"（有人捡到）；'
+    'action_type：必填，只能是 "lost"（寻物启事，失主在找东西）或 "found"（失物招领，有人捡到东西）；'
     "title：物品名，4-10 个字，只写物品本身，不要加「失物招领」「丢失」这类词；"
     "category：必须从这组词里原样选一个 —— " + "、".join(CATEGORY_ENUM) + "；"
     "color：颜色词，没有就给空字符串；"
@@ -93,8 +93,16 @@ def _clean_fields(data):
     features = data.get("features") or []
     if isinstance(features, str):
         features = [part for part in re.split(r"[、,，;；\s]+", features) if part]
+    raw_type = str(data.get("action_type") or data.get("kind") or "").strip().lower()
+    if raw_type.startswith("lost"):
+        action_type = "lost"
+    elif raw_type.startswith("found"):
+        action_type = "found"
+    else:
+        action_type = "found"
     cleaned = {
-        "kind": "lost" if str(data.get("kind", "")).lower().startswith("lost") else "found",
+        "action_type": action_type,
+        "kind": action_type,
         "title": _clean_title(data.get("title")),
         "category": str(data.get("category") or "其他").strip()[:12],
         "color": str(data.get("color") or "").strip()[:8],
@@ -136,10 +144,11 @@ def rule_extract(text):
     if not picked:
         picked = [s for s in segments if not any(t in s for t in TIME_WORDS)]
     features = picked[:3]
-    kind = "lost" if any(word in raw for word in ("丢", "找", "寻", "丢失", "遗失")) else "found"
+    action_type = "lost" if any(word in raw for word in ("丢", "找", "寻", "丢失", "遗失", "不见", "落在", "忘在", "遗忘")) else "found"
     title = "%s%s" % (color, category if category != "其他" else "物品")
     return {
-        "kind": kind,
+        "action_type": action_type,
+        "kind": action_type,
         "title": title[:20],
         "category": category,
         "color": color,
